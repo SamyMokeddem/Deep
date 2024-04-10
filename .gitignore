@@ -1,0 +1,7 @@
+*.zip
+
+
+homework/data/
+homework/PetImages/
+
+.ipynb_checkpoints/
