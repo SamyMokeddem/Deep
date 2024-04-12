@@ -5,3 +5,5 @@ homework/data/
 homework/PetImages/
 
 .ipynb_checkpoints/
+
+cerra/*.nc
