@@ -47,29 +47,48 @@ class DownscalingDataset(Dataset):
 
         return sample
 
+def merge_out_data(start_year, end_year):
+    high_res_data = None
+    high_res_dt = None
+    for year in range(start_year, end_year+1):
+        if high_res_data is None:
+            high_res_data = np.load('download/cerra/si10-' + str(year) + '.npy')
+            high_res_dt = np.load('download/cerra/datetime_' + str(year) + '.npy')
+        else:
+            tmp = np.load('download/cerra/si10-' + str(year) + '.npy')
+            high_res_data = np.concatenate((high_res_data, tmp), axis=0)
+            tmp_dt = np.load('download/cerra/datetime_' + str(year) + '.npy')
+            high_res_dt = np.concatenate((high_res_dt, tmp_dt), axis=0)
+   
+    return high_res_data, high_res_dt
     
 
-def make_clean_data(out_var, in_var, year):
-    if year < 2010 or year > 2020:
+def make_clean_data(in_vars, start_year, end_year):
+    if start_year < 2010 or end_year > 2020:
         print("year must be greater than 2010 and less than 2020")
         return
-    in_path = 'download/era5/'+in_var+'-2010_2020.nc'
-    in_data = nc.Dataset(in_path)
-    # get the 3-hour of the start day from Unix timestamp
-    start_hour = datetime(2010, 1, 1, 0).timestamp()/3600/3
-    end_hour = datetime(2021, 1, 1, 0).timestamp()/3600/3
-    low_hour = datetime(year, 1, 1, 0).timestamp()/3600/3
-    high_hour = datetime(year+1, 1, 1, 0).timestamp()/3600/3
-    start_index = int(low_hour - start_hour)
-    end_index = int(high_hour - start_hour)
-    in_data = in_data[in_var][start_index:end_index]
-    out_data = np.load('download/cerra/' + out_var + '-' + str(year) + '.npy')
+    
+    out_data, out_date = merge_out_data(2010, 2020)
+    in_data = None
+    for in_var in in_vars:   
+        in_path = 'download/era5/'+in_var+'-2010_2020.nc'
+        tmp_data = nc.Dataset(in_path)
+        tmp_data = np.expand_dims(tmp_data[in_var][:], axis=3)
+        if in_data is None:
+            in_data = tmp_data
+        else:
+            in_data = np.concatenate((in_data, tmp_data), axis=3)
+    #filter data in fonction of start_year and end_year
+    low_hour = datetime(start_year, 1, 1, 1).timestamp()
+    high_hour = datetime(end_year, 1, 1, 1).timestamp()
+    low_index = np.where(out_date == low_hour)[0][0]
+    high_index = np.where(out_date == high_hour)[0][0]
 
-    return in_data, out_data
+    return in_data[low_index:high_index], out_data[low_index:high_index]
 
 
 if __name__ == "__main__":
-    in_data, out_data = make_clean_data('si10', 'u10', 2019)
+    in_data, out_data = make_clean_data(['u10'], 2012, 2019)
     dataset = DownscalingDataset(in_data, out_data, low_var_name='u10', high_var_name='si10')
     dataset.get_var_name()
     print(len(dataset))
