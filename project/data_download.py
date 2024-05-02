@@ -68,7 +68,10 @@ def download_era5_data(c, years='2019', variable='total_precipitation'):
         download_name
         )
 
-def filter_cerra_data(file_path, variable):
+def filter_cerra_data(file_path, variable, remove=False, north=52, south=49, west=2, east=7):
+    if west < 0:
+        west = 360 + west
+    
     var_name = ''
     if variable == 'total_precipitation':
         var_name = 'tp'
@@ -83,15 +86,19 @@ def filter_cerra_data(file_path, variable):
 
     data = nc.Dataset(file_path)
 
-    lat = data['latitude'][:, 0]
-    y_index = np.where((lat <= 52) & (lat >= 49))[0]
+    lat_error = np.absolute(data['latitude'][:] - north)
+    lon_error = np.absolute(data['longitude'][:] - west)
+    cord_error = lat_error + lon_error
+    top_index = np.unravel_index(np.argmin(cord_error), lat_error.shape)
 
-    lon = data['longitude'][0, :]
-    x_index = np.where((lon >= 2) & (lon <= 7))[0]
+    lat_error = np.absolute(data['latitude'][:] - south)
+    lon_error = np.absolute(data['longitude'][:] - east)
+    cord_error = lat_error + lon_error
+    bottom_index = np.unravel_index(np.argmin(cord_error), lat_error.shape)
 
-    filter_lat = np.array(lat[y_index])
-    filter_lon = np.array(lon[x_index])
-    filter_data = np.array(data[var_name][:, y_index, x_index])
+    filter_lat = np.array(data['latitude'][bottom_index[0]:top_index[0], top_index[1]:bottom_index[1]])
+    filter_lon = np.array(data['longitude'][bottom_index[0]:top_index[0], top_index[1]:bottom_index[1]])
+    filter_data = np.array(data[var_name][:, bottom_index[0]:top_index[0], top_index[1]:bottom_index[1]])
     datetime = np.array(data["valid_time"][:])
 
     if not os.path.exists('download/cerra/lat.npy'):
@@ -104,8 +111,9 @@ def filter_cerra_data(file_path, variable):
     np.save('download/cerra/' + file_name + '.npy', filter_data)
     
     print("Data filtered and saved successfully!")
-    os.remove(file_path)
-    print("Original file removed successfully!")
+    if remove:
+        os.remove(file_path)
+        print("Original file removed successfully!")
 
 
 
@@ -195,9 +203,25 @@ def download_CERRA_data(c, year='2019', variable='total_precipitation'):
 
 
 if __name__ == '__main__':
-    c = cdsapi.Client()
-    years = [str(y) for y in range(2010, 2021)]
-    # download_era5_data(c, years, '10m_u_component_of_wind')
-    # download_era5_data(c, years, '10m_v_component_of_wind')
-    # download_CERRA_data(c, '2020', '10m_wind_speed')
-    filter_cerra_data('download/cerra/si10-2020.nc', '10m_wind_speed')
+# c = cdsapi.Client()
+# download_CERRA_data(c, '2020', '10m_wind_speed')
+# filter_cerra_data('download/cerra/si10-2020.nc', '10m_wind_speed')
+# download_CERRA_data(c, '2019', '10m_wind_speed')
+# filter_cerra_data('download/cerra/si10-2019.nc', '10m_wind_speed')
+# download_CERRA_data(c, '2018', '10m_wind_speed')
+# filter_cerra_data('download/cerra/si10-2018.nc', '10m_wind_speed')
+# download_CERRA_data(c, '2017', '10m_wind_speed')
+# filter_cerra_data('download/cerra/si10-2017.nc', '10m_wind_speed')
+# download_CERRA_data(c, '2016', '10m_wind_speed')
+# filter_cerra_data('download/cerra/si10-2016.nc', '10m_wind_speed')
+# download_CERRA_data(c, '2015', '10m_wind_speed')
+# filter_cerra_data('download/cerra/si10-2015.nc', '10m_wind_speed')
+# download_CERRA_data(c, '2014', '10m_wind_speed')
+# filter_cerra_data('download/cerra/si10-2014.nc', '10m_wind_speed')
+# download_CERRA_data(c, '2013', '10m_wind_speed')
+# filter_cerra_data('download/cerra/si10-2013.nc', '10m_wind_speed')
+# download_CERRA_data(c, '2012', '10m_wind_speed')
+# filter_cerra_data('download/cerra/si10-2012.nc', '10m_wind_speed')
+# download_CERRA_data(c, '2011', '10m_wind_speed')
+# filter_cerra_data('download/cerra/si10-2011.nc', '10m_wind_speed')
+    

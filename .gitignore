@@ -7,3 +7,5 @@ homework/PetImages/
 .ipynb_checkpoints/
 
 cerra/*.nc
+
+wandb/

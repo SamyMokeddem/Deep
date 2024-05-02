@@ -11,18 +11,24 @@ warnings.filterwarnings("ignore")
 class DownscalingDataset(Dataset):
     """Face Landmarks dataset."""
 
-    def __init__(self, low_res_data, high_res_data, low_var_name=None, high_var_name=None):
+    def __init__(self, low_res_data, high_res_data, low_var_name=None, high_var_name=None, indices = None):
         """
         Args:
             root_dir (string): Directory with all the images.
             low_res_path (string): Path to the low resolution data.
             high_res_path (string): Path to the high resolution data.
+            indices (array) : indices of the subset (train, val, test)
         """
-        self.low_res_data = low_res_data
-        self.high_res_data = high_res_data
+        if indices is not None:
+            self.low_res_data = low_res_data[indices]
+            self.high_res_data = high_res_data[indices]
+        else:
+            self.low_res_data = low_res_data
+            self.high_res_data = high_res_data
+
         self.low_var_name = low_var_name
         self.high_var_name = high_var_name
-        
+
         if len(self.low_res_data) != len(self.high_res_data):
             raise ValueError("Low res and high res data must have the same length")
 
@@ -47,6 +53,14 @@ class DownscalingDataset(Dataset):
 
         return sample
 
+def spliting_indices(n, val_pct=0.15, test_pct=0.15):
+    n_val = int(val_pct * n)
+    n_test = int(test_pct * n)
+    n_train = n - n_val - n_test
+    indices = np.random.permutation(n)
+    return indices[:n_train], indices[n_train:n_train + n_val], indices[n_train + n_val:]
+    
+    
 def merge_out_data(start_year, end_year):
     high_res_data = None
     high_res_dt = None
@@ -83,12 +97,13 @@ def make_clean_data(in_vars, start_year, end_year):
     high_hour = datetime(end_year, 1, 1, 1).timestamp()
     low_index = np.where(out_date == low_hour)[0][0]
     high_index = np.where(out_date == high_hour)[0][0]
-
+    print(low_index, high_index)
     return in_data[low_index:high_index], out_data[low_index:high_index]
 
 
 if __name__ == "__main__":
-    in_data, out_data = make_clean_data(['u10'], 2012, 2019)
+    in_data, out_data = make_clean_data(['u10'], 2010, 2019)
+#     in_data = np.squeeze(in_data, axis=3)
     dataset = DownscalingDataset(in_data, out_data, low_var_name='u10', high_var_name='si10')
     dataset.get_var_name()
     print(len(dataset))
