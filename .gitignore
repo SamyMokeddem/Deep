@@ -9,3 +9,4 @@ homework/PetImages/
 cerra/*.nc
 
 wandb/
+__pycache__/

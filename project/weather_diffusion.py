@@ -9,7 +9,9 @@ from datetime import datetime
 import torch.optim as optim
 import dataset as windData
 from tqdm import tqdm
-from models import DenoisingUnet 
+from models import DenoisingUnet
+import matplotlib.pyplot as plt
+import math
 # Ignore warnings
 import warnings
 warnings.filterwarnings("ignore")
@@ -91,31 +93,26 @@ class NoiseScheduler():
         return sqrt_alphas_cumprod_t.to(device) * x_0.to(device) \
         + sqrt_one_minus_alphas_cumprod_t.to(device) * noise.to(device), noise.to(device)
 
-def save_model(model, optimizer, path):
-    torch.save({
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-    }, path)
+def save_model(model, run_name):
+    path = "train_models/" + run_name + ".pth"
+    try:
+        torch.save(model.state_dict(), path)
+    except:
+        print("Error while saving the model")
 
-def load_model(model, path, optimizer=None):
-    checkpoint = torch.load(path)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    if optimizer is not None:
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    return model, optimizer
+def load_model(model, path):
+    return model.load_state_dict(torch.load(path))
 
-def train(model, ns, train_data_loader, val_data_loader, num_epochs=100, save=True):
+def train_proc(model, ns, train_data_loader, val_data_loader, num_epochs=100, batch_size=32, lr=5e-04, run_name=None, save=True, load_best_model=True):
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model.to(device)
-    batch_size = 512 # 8 in paper
-    num_epochs = 200 # 200 in paper.
-    lr = 5e-03 # 1e-03 # 5e-04 # 1e-04
-    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-05)
+    model.to(device) # 200 in paper.
+    optimizer = optim.Adam(model.parameters(), lr=lr)
 
     # Load the data
     
 
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=5, factor=0.5, verbose=True, threshold=1e-04)
+    # scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=5, factor=0.5, verbose=True, threshold=1e-04)
+    run_name = run_name if run_name is not None else datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
     wandb.init(
         # set the wandb project where this run will be logged
@@ -131,7 +128,7 @@ def train(model, ns, train_data_loader, val_data_loader, num_epochs=100, save=Tr
         "epochs": num_epochs
         },
         
-        name="MSE_supersimplified_plateau_ddimnoise_lr5e-3_batch512_with_attention_channel"
+        name=run_name
     )
 
     for epoch in tqdm(range(num_epochs)):
@@ -140,6 +137,8 @@ def train(model, ns, train_data_loader, val_data_loader, num_epochs=100, save=Tr
         model.train()
         total_loss = 0.0
         total_batches = 0
+
+        best_loss = math.inf
 
         for i, batch in enumerate(train_data_loader):
             optimizer.zero_grad()
@@ -156,7 +155,7 @@ def train(model, ns, train_data_loader, val_data_loader, num_epochs=100, save=Tr
             noisy_x, noise = ns.forward_diffusion_sample(high_res_imgs, t)
 
             noisy_x = noisy_x.float()
-
+            
             # For now, let's only condition on low res at the same time, to simplify implementation
             low_res_imgs = batch["low_res"]
             low_res_imgs = low_res_imgs.unsqueeze(1).float() # because one channel
@@ -175,9 +174,12 @@ def train(model, ns, train_data_loader, val_data_loader, num_epochs=100, save=Tr
             total_batches += 1
 
             loss.backward()
+
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
         average_loss = total_loss/total_batches
         wandb.log({"loss": average_loss, "epoch":epoch, 'lr': optimizer.param_groups[0]['lr']})
+
 
         # test part
 
@@ -219,7 +221,7 @@ def train(model, ns, train_data_loader, val_data_loader, num_epochs=100, save=Tr
                 test_batches += 1
 
             average_test_loss = test_loss/test_batches
-            scheduler.step(average_test_loss) # ReduceLR on plateau!
+            #scheduler.step(average_test_loss) # ReduceLR on plateau!
             wandb.log({"test_loss": average_test_loss, "epoch":epoch})
 
         if epoch % 5 == 0:
@@ -227,18 +229,27 @@ def train(model, ns, train_data_loader, val_data_loader, num_epochs=100, save=Tr
             print(f"Training Loss over the last epoch = {average_loss}")
             print(f"Test Loss over the last epoch = {average_test_loss}")
             print(f"Learning rate = {optimizer.param_groups[0]['lr']}") # Trying to see if ReduceLROnPlateau works
-    if save:
-        save_model(model, optimizer, 'diffusion_model_wind_with_attention.pth')
-    
-def test(data_loader, path='diffusion_model_wind.pth'):
-    model, _ = load_model(model, None, path)
 
+        if load_best_model:
+            if average_test_loss < best_loss:
+                best_loss = average_test_loss
+                save_model(model, run_name+"_best")
+
+    if save:
+        save_model(model, run_name+"_final")
+    
+    if load_best_model:
+        model= load_model(model, "train_models/" + run_name + "_best.pth")
+
+    wandb.finish()
+    
+def test_proc(model, ns, data_loader):
     batch = next(iter(data_loader))
     batch_size = 3 # Simpler plot + faster computations, can change that back later
     batch["low_res"] = batch["low_res"][:batch_size]
     batch['high_res'] = batch['high_res'][:batch_size]
 
-    all_x_t = DDPM_infer(model, batch)
+    all_x_t = DDPM_infer(model, ns, batch)
 
     fig, axs = plt.subplots(len(all_x_t), batch_size, figsize=(6, 12))
 
@@ -247,11 +258,16 @@ def test(data_loader, path='diffusion_model_wind.pth'):
     for i in range(len(all_x_t)):
         for j in range(batch_size):
             axs[i, j].imshow(all_x_t[i][j].squeeze().numpy())
+    
+    plt.savefig('diffusion_prediction.png')
 
 def DDPM_infer(model, ns, batch):
     batch_size = batch["low_res"].shape[0]
     low_res_imgs = batch["low_res"].unsqueeze(1)
     upsampled = F.interpolate(low_res_imgs, size=up_shape, mode='bilinear')
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model.to(device)
 
     n_steps = 5
 
@@ -260,10 +276,10 @@ def DDPM_infer(model, ns, batch):
     x_t = torch.randn((batch_size, 1, batch["high_res"][0].shape[0], batch["high_res"][0].shape[1]))
     all_x_t.append(x_t)
     for i in range(ns.T-1, -1, -1):
-        t = torch.tensor([i for _ in range(batch_size)], device='cpu').long()
+        t = torch.tensor([i for _ in range(batch_size)]).to(device).long()
         
         unet_input = torch.cat((x_t, upsampled), dim=1)
-        unet_input = unet_input.float()
+        unet_input = unet_input.float().to(device)
 
         betas_t = ns.get_index_from_list(ns.betas, t, x_t.shape)
 
@@ -271,9 +287,10 @@ def DDPM_infer(model, ns, batch):
 
         sqrt_recip_alphas_t = ns.get_index_from_list(ns.sqrt_recip_alphas, t, x_t.shape)
         
-
         with torch.no_grad():
-            x_t_minus_1 = sqrt_recip_alphas_t * (x_t - betas_t * model(unet_input, t) / sqrt_one_minus_alphas_cumprod_t)
+
+            pred_noise = model(unet_input, t).to('cpu')
+            x_t_minus_1 = sqrt_recip_alphas_t * (x_t - betas_t * pred_noise / sqrt_one_minus_alphas_cumprod_t)
 
             posterior_variance_t = ns.get_index_from_list(ns.posterior_variance, t, x_t.shape)
 
@@ -290,10 +307,14 @@ def DDPM_infer(model, ns, batch):
     return all_x_t
 
 if __name__ == "__main__":
-    print("loading of the data")
-    train_dataset, test_dataset, val_dataset = load_data(['u10', 'v10'], 2010, 2019, split_ratio = [0.2, 0.2])
+    train = True
+    test = False
 
-    batch_size = 8
+
+    print("loading of the data")
+    train_dataset, test_dataset, val_dataset = load_data(['u10', 'v10'], 2010, 2019, split_ratio = [0.1, 0.1])
+
+    batch_size = 64
 
     train_data_loader = DataLoader(train_dataset, batch_size= batch_size, shuffle=True)
     test_data_loader = DataLoader(test_dataset, batch_size= batch_size, shuffle=True)
@@ -302,20 +323,44 @@ if __name__ == "__main__":
     print("Data loaded")
     # Define the model
     print("Model creation")
-    unet_channels = [64, 128]
+    unet_channels = [8, 16, 32, 32, 32]
+    kernel_sizes = [3, 5, 7, 5, 3]
     input_channels = 2
     output_channels = 1
     time_emb_dim = 32 # I guess that's a standard value
     up_shape = train_dataset[0]["high_res"].shape
-    model = DenoisingUnet(unet_channels, input_channels, output_channels , time_emb_dim, up_shape)
-    NoiseScheduler = NoiseScheduler(100, 0.1, 0.3)
+    model = DenoisingUnet(
+        unet_channels, 
+        input_channels, 
+        output_channels, 
+        kernel_sizes,
+        time_emb_dim, 
+        up_shape, 
+        dropout=0.1, 
+        attention=True,
+        )
+    ns = NoiseScheduler(20, 0.015, 0.95)
     print("model created")
     print("Num params: ", sum(p.numel() for p in model.parameters()))
 
-    print("start of the training process")
-    train(model, NoiseScheduler, train_data_loader, val_data_loader, num_epochs=100, save=True)
-    print("end of the training process")
+    if train:
+        print("start of the training process")
+        train_proc(
+            model, 
+            ns, 
+            train_data_loader, 
+            val_data_loader, 
+            num_epochs=100,
+            batch_size=batch_size,
+            lr=2.5e-04, 
+            save=True,
+            load_best_model=True
+            )
+        test_proc(model, ns, test_data_loader)
+        print("end of the training process")
 
-    print("testing of the saved model")
-    test(test_data_loader, path='diffusion_model_wind_with_attention.pth')
-    print("end of the testing process")
+    if test:
+        print("testing of the saved model")
+        model = load_model(model, 'train_models/2024-05-02_17-31-05_best.pth')
+        test_proc(model, ns, test_data_loader)
+        print("end of the testing process")

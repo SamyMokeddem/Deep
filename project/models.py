@@ -67,11 +67,11 @@ class SpatialAttention(nn.Module):
 
 class DownBlock(nn.Module):
     '''Downsampling block used to build Unet'''
-    def __init__(self, in_ch, out_ch, drop_p, time_emb_dim):
+    def __init__(self, in_ch, out_ch, ks, drop_p, time_emb_dim, attention=False):
         super().__init__()
 
-        self.conv1 = nn.Conv2d(in_ch, out_ch, 3, padding='same')
-        self.conv2 = nn.Conv2d(out_ch, out_ch, 3, padding='same')
+        self.conv1 = nn.Conv2d(in_ch, out_ch, ks, padding='same')
+        self.conv2 = nn.Conv2d(out_ch, out_ch, ks, padding='same')
 
         self.bnorm1 = nn.BatchNorm2d(out_ch)
         self.bnorm2 = nn.BatchNorm2d(out_ch)
@@ -84,8 +84,12 @@ class DownBlock(nn.Module):
 
         self.time_mlp =  nn.Linear(time_emb_dim, out_ch)
         
-        #self.channel_attention = ChannelAttention(out_ch)
-        self.spatial_attention = SpatialAttention()
+        self.attention = False
+        if attention:
+            self.attention = True
+            #self.channel_attention = ChannelAttention(out_ch)
+            self.spatial_attention = SpatialAttention()
+        
 
     def forward(self, x, t):
         h = self.bnorm1(self.relu(self.conv1(x)))
@@ -99,8 +103,9 @@ class DownBlock(nn.Module):
 
         h = self.bnorm2(self.relu(self.conv2(h)))
         
-        #h = self.channel_attention(h)
-        h = self.spatial_attention(h)
+        if self.attention:
+            #h = self.channel_attention(h)
+            h = self.spatial_attention(h)
 
         h = self.avgpool(h)
 
@@ -110,14 +115,14 @@ class DownBlock(nn.Module):
     
 class UpBlock(nn.Module):
     '''Upampling block used to build Unet'''
-    def __init__(self, in_ch, out_ch, drop_p, time_emb_dim, shape):
+    def __init__(self, in_ch, out_ch, ks, drop_p, time_emb_dim, shape, attention=False):
         super().__init__()
 
         self.upsamp = nn.Upsample(size=shape, mode='bilinear')
 
         # 2*in_ch because residual connection
-        self.conv1 = nn.Conv2d(2*in_ch, out_ch, 3, padding='same')
-        self.conv2 = nn.Conv2d(out_ch, out_ch, 3, padding='same')
+        self.conv1 = nn.Conv2d(2*in_ch, out_ch, ks, padding='same')
+        self.conv2 = nn.Conv2d(out_ch, out_ch, ks, padding='same')
 
         self.bnorm1 = nn.BatchNorm2d(out_ch)
         self.bnorm2 = nn.BatchNorm2d(out_ch)
@@ -128,8 +133,11 @@ class UpBlock(nn.Module):
 
         self.time_mlp =  nn.Linear(time_emb_dim, out_ch)
         
-        #self.channel_attention = ChannelAttention(out_ch)
-        self.spatial_attention = SpatialAttention()
+        self.attention = False
+        if attention:
+            self.attention = True
+            #self.channel_attention = ChannelAttention(out_ch)
+            self.spatial_attention = SpatialAttention()
 
 
     def forward(self, x, t):
@@ -148,27 +156,31 @@ class UpBlock(nn.Module):
 
         h = self.bnorm2(self.relu(self.conv2(h)))
         
-        #h = self.channel_attention(h)
-        h = self.spatial_attention(h)
+        if self.attention:
+            #h = self.channel_attention(h)
+            h = self.spatial_attention(h)
 
         return h
     
 
 class Bottleneck(nn.Module):
     '''Bottleneck block used to build Unet'''
-    def __init__(self, in_ch, out_ch, time_emb_dim):
+    def __init__(self, in_ch, out_ch, ks, time_emb_dim, attention=False):
         super().__init__()
 
         self.time_mlp =  nn.Linear(time_emb_dim, out_ch)
 
-        self.conv1 = nn.Conv2d(in_ch, out_ch, 3, padding='same')
-        self.conv2 = nn.Conv2d(out_ch, out_ch, 3, padding='same')
+        self.conv1 = nn.Conv2d(in_ch, out_ch, ks, padding='same')
+        self.conv2 = nn.Conv2d(out_ch, out_ch, ks, padding='same')
 
         self.bnorm1 = nn.BatchNorm2d(out_ch)
         self.bnorm2 = nn.BatchNorm2d(out_ch)
         
-        #self.channel_attention = ChannelAttention(out_ch)
-        self.spatial_attention = SpatialAttention()
+        self.attention = False
+        if attention:
+            self.attention = True
+            #self.channel_attention = ChannelAttention(out_ch)
+            self.spatial_attention = SpatialAttention()
 
         self.relu = nn.ReLU()
 
@@ -185,16 +197,24 @@ class Bottleneck(nn.Module):
 
         h = self.bnorm2(self.relu(self.conv2(h)))
         
-        #h = self.channel_attention(h)
-        h = self.spatial_attention(h)
+        if self.attention:
+            #h = self.channel_attention(h)
+            h = self.spatial_attention(h)
 
         return h
     
 
 class DenoisingUnet(nn.Module):
     '''Unet architecture denoising model'''
-    def __init__(self, nbr_channels, input_channels, output_channels, time_emb_dim, shape):
+    def __init__(self, nbr_channels, input_channels, output_channels, kernel_sizes, time_emb_dim, shape, dropout=0.1, attention=False):
         super().__init__()
+        self.nbr_channels = nbr_channels
+        self.input_channels = input_channels
+        self.dropout = dropout
+        self.time_emb_dim = time_emb_dim
+        self.dropout = dropout
+        self.attention = attention
+
         self.down_channels = tuple(nbr_channels)
         self.up_channels = tuple(nbr_channels[::-1])
 
@@ -202,19 +222,61 @@ class DenoisingUnet(nn.Module):
         # they say they have 4 blocks on each side and they give 4 different numbers of
         # channels
 
-        self.down0 = DownBlock(input_channels, self.down_channels[0], 0.5, time_emb_dim)
+        self.down0 = DownBlock(
+            input_channels, 
+            self.down_channels[0], 
+            kernel_sizes[0],
+            dropout, 
+            time_emb_dim,
+            attention=attention
+            )
 
-        self.downs = nn.ModuleList([DownBlock(self.down_channels[i], self.down_channels[i+1], 0.5, time_emb_dim) \
-                                   for i in range(len(self.down_channels)-1)])
+        dbList = []
+        for i in range(len(self.down_channels)-1):
+            dbList.append(DownBlock(
+                                    self.down_channels[i],
+                                    self.down_channels[i+1], 
+                                    kernel_sizes[i+1],
+                                    dropout, 
+                                    time_emb_dim
+                                    ))
 
-        self.bottleneck = Bottleneck(self.down_channels[-1], self.down_channels[-1], time_emb_dim)
+        self.downs = nn.ModuleList(dbList)
 
-        shapes = [(shape[0]//2 **(len(nbr_channels)-i-1), shape[1]//2 **(len(nbr_channels)-i-1)) for i in range(len(self.up_channels))]
+        self.bottleneck = Bottleneck(
+                                self.down_channels[-1], 
+                                self.down_channels[-1], 
+                                kernel_sizes[-1],
+                                time_emb_dim, 
+                                attention=attention)
 
-        self.ups = nn.ModuleList([UpBlock(self.up_channels[i], self.up_channels[i+1], 0.5, time_emb_dim, shapes[i]) \
-                                   for i in range(len(self.up_channels)-1)])
+        shapes = []
+        for i in range(len(self.up_channels)):
+            shapes.append((shape[0]//2 **(len(nbr_channels)-i-1), shape[1]//2 **(len(nbr_channels)-i-1)))
 
-        self.output = UpBlock(self.up_channels[-1], output_channels, 0.5, time_emb_dim, shapes[-1])
+        upList = []
+        for i in range(len(self.up_channels)-1):
+            upList.append(UpBlock(
+                                    self.up_channels[i],
+                                    self.up_channels[i+1], 
+                                    kernel_sizes[i],
+                                    dropout, 
+                                    time_emb_dim, 
+                                    shapes[i], 
+                                    attention=attention
+                                    ))
+
+        self.ups = nn.ModuleList(upList)
+
+        self.output = UpBlock(
+            self.up_channels[-1], 
+            output_channels, 
+            kernel_sizes[-1],
+            dropout, 
+            time_emb_dim, 
+            shapes[-1],
+            attention=attention
+            )
 
         # Time embedding
         self.time_mlp = nn.Sequential(
@@ -254,7 +316,6 @@ class DenoisingUnet(nn.Module):
 def callback_lr_wd(optimizer, epoch, num_epochs):
     '''Callback function that adjusts both the learning rate and weight decay'''
     lr = 1e-04 * (0.1 ** (epoch / num_epochs)) # Learning rate decay from 1e-04 to 1e-05
-    wd = 1e-05 * (0.1 ** (epoch / num_epochs)) # Weight decay decay from 1e-05 to 1e-06
+
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
-        param_group['weight_decay'] = wd
