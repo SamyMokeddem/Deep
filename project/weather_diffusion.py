@@ -243,13 +243,9 @@ def train_proc(model, ns, train_data_loader, val_data_loader, architecture_detai
             print(f"Training Loss over the last epoch = {average_loss}")
             print(f"Test Loss over the last epoch = {average_test_loss}")
             print(f"Learning rate = {optimizer.param_groups[0]['lr']}") # Trying to see if ReduceLROnPlateau works
-            batch = next(iter(train_data_loader))
-            all_xt = DDPM_infer(model, ns, batch)
-            fig, axs = plt.subplots(len(all_xt), batch_size, figsize=(6, 12))
-            fig.suptitle(f"Evolution of prediction over time steps (train set) : Epochs {epoch}")
-            for i in range(len(all_xt)):
-                for j in range(batch_size):
-                    axs[i, j].imshow(all_xt[i][j].squeeze().numpy())
+            #inference
+            test_proc(model, ns, train_data_loader, num_epoch=epoch)
+            test_proc(model, ns, test_data_loader, num_epoch=epoch)
 
 
         if load_best_model:
@@ -265,7 +261,7 @@ def train_proc(model, ns, train_data_loader, val_data_loader, architecture_detai
 
     wandb.finish()
     
-def test_proc(model, ns, data_loader):
+def test_proc(model, ns, data_loader, num_epoch = 200):
     batch = next(iter(data_loader))
     batch_size = 3 # Simpler plot + faster computations, can change that back later
     batch["low_res"] = batch["low_res"][:batch_size]
@@ -275,13 +271,13 @@ def test_proc(model, ns, data_loader):
 
     fig, axs = plt.subplots(len(all_x_t), batch_size, figsize=(6, 12))
 
-    fig.suptitle("Evolution of prediction over time steps")
+    fig.suptitle(f"Evolution of prediction over time steps Epoch {num_epochs}")
 
     for i in range(len(all_x_t)):
         for j in range(batch_size):
             axs[i, j].imshow(all_x_t[i][j].squeeze().numpy())
     
-    plt.savefig('diffusion_prediction.png')
+    plt.savefig(f'inference/diffusion_prediction_{num_epochs}.png')
 
 def DDPM_infer(model, ns, batch):
     batch_size = batch["low_res"].shape[0]
@@ -389,11 +385,11 @@ if __name__ == "__main__":
             load_best_model=True
             )
 
-        test_proc(model, ns, test_data_loader)
+        test_proc(model, ns, test_data_loader, num_epoch=num_epochs)
         print("end of the training process")
 
     if test:
         print("testing of the saved model")
         model = load_model(model, 'train_models/2024-05-02_17-31-05_best.pth')
-        test_proc(model, ns, test_data_loader)
+        test_proc(model, ns, test_data_loader, num_epoch=num_epochs)
         print("end of the testing process")
