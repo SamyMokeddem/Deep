@@ -188,19 +188,20 @@ def train_proc(model, ns, train_data_loader, val_data_loader, architecture_detai
 
             loss.backward()
 
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
             optimizer.step()
 
         average_loss = total_loss/total_batches
         wandb.log({"loss": average_loss, "epoch":epoch, 'lr': optimizer.param_groups[0]['lr']})
 
 
-        # test part
+        # validation part
 
         model.eval()
         with torch.no_grad(): # not sure needed since we use model.eval() but I guess it cannot harm
-            test_loss = 0.0
-            test_batches = 0
+            val_loss = 0.0
+            val_batches = 0
 
             for i, batch in enumerate(val_data_loader):
 
@@ -231,26 +232,30 @@ def train_proc(model, ns, train_data_loader, val_data_loader, architecture_detai
                 noise = noise.to(device)
                 loss = F.mse_loss(noise, noise_pred) # before: l1_loss
                 
-                test_loss += loss.item()
-                test_batches += 1
+                val_loss += loss.item()
+                val_batches += 1
 
-            average_test_loss = test_loss/test_batches
+            average_val_loss = val_loss/val_batches
             #scheduler.step(average_test_loss) # ReduceLR on plateau!
-            wandb.log({"test_loss": average_test_loss, "epoch":epoch})
+            wandb.log({"test_loss": average_val_loss, "epoch":epoch})
 
         if epoch % 5 == 0:
             print(f"Epoch = {epoch+1}/{num_epochs}.")
             print(f"Training Loss over the last epoch = {average_loss}")
-            print(f"Test Loss over the last epoch = {average_test_loss}")
+            print(f"Validation Loss over the last epoch = {average_val_loss}")
             print(f"Learning rate = {optimizer.param_groups[0]['lr']}") # Trying to see if ReduceLROnPlateau works
             #inference
-            test_proc(model, ns, train_data_loader, num_epoch=epoch)
-            test_proc(model, ns, test_data_loader, num_epoch=epoch)
+            # ddim
+            test_proc(model, ns, train_data_loader, train=True, ddpm=False, num_epoch=epoch)
+            test_proc(model, ns, val_data_loader, train=False, ddpm=False, num_epoch=epoch)
+            # ddpm
+            test_proc(model, ns, train_data_loader, train=True, ddpm=True, num_epoch=epoch)
+            test_proc(model, ns, val_data_loader, train=False, ddpm=True, num_epoch=epoch)
 
 
         if load_best_model:
-            if average_test_loss < best_loss:
-                best_loss = average_test_loss
+            if average_val_loss < best_loss:
+                best_loss = average_val_loss
                 save_model(model, run_name+"_best", architecture_details=architecture_details)
 
     if save:
@@ -261,37 +266,55 @@ def train_proc(model, ns, train_data_loader, val_data_loader, architecture_detai
 
     wandb.finish()
     
-def test_proc(model, ns, data_loader, num_epoch = 200):
+def test_proc(model, ns, data_loader, train=False, ddpm=False, num_epoch = 200):
     batch = next(iter(data_loader))
     batch_size = 3 # Simpler plot + faster computations, can change that back later
     batch["low_res"] = batch["low_res"][:batch_size]
     batch['high_res'] = batch['high_res'][:batch_size]
 
-    all_x_t = DDPM_infer(model, ns, batch)
+    if ddpm:
+        all_x_t = DDPM_infer(model, ns, batch)
+    else:
+        all_x_t = DDIM_infer(model, ns, batch)
 
     fig, axs = plt.subplots(len(all_x_t), batch_size, figsize=(6, 12))
 
-    fig.suptitle(f"Evolution of prediction over time steps Epoch {num_epochs}")
+    fig.suptitle(f"Evolution of prediction over time steps at Epoch {num_epoch}")
 
     for i in range(len(all_x_t)):
         for j in range(batch_size):
-            axs[i, j].imshow(all_x_t[i][j].squeeze().numpy())
-    
-    plt.savefig(f'inference/diffusion_prediction_{num_epochs}.png')
+            axs[i, j].imshow(all_x_t[i][j].squeeze().to('cpu').numpy())
+
+    if ddpm:
+        if train:
+            wandb.log({"ddpm_train": fig})
+            plt.savefig(f'inference/ddpm_prediction_train_{num_epoch}.png')
+        else:
+            wandb.log({"ddpm_val": fig})
+            plt.savefig(f'inference/ddpm_prediction_val_{num_epoch}.png')
+    else:
+        if train:
+            wandb.log({"ddim_train": fig})
+            plt.savefig(f'inference/ddim_prediction_train_{num_epoch}.png')
+        else:
+            wandb.log({"ddim_val": fig})
+            plt.savefig(f'inference/ddim_prediction_val_{num_epoch}.png')
+    plt.close()
 
 def DDPM_infer(model, ns, batch):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    
     batch_size = batch["low_res"].shape[0]
     low_res_imgs = batch["low_res"].unsqueeze(1)
-    upsampled = F.interpolate(low_res_imgs, size=up_shape, mode='bilinear')
+    upsampled = F.interpolate(low_res_imgs, size=up_shape, mode='bilinear').to(device)
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
 
     n_steps = 5
 
     all_x_t = []
 
-    x_t = torch.randn((batch_size, 1, batch["high_res"][0].shape[0], batch["high_res"][0].shape[1]))
+    x_t = torch.randn((batch_size, 1, batch["high_res"][0].shape[0], batch["high_res"][0].shape[1])).to(device)
     all_x_t.append(x_t)
     for i in range(ns.T-1, -1, -1):
         t = torch.tensor([i for _ in range(batch_size)]).to(device).long()
@@ -299,27 +322,74 @@ def DDPM_infer(model, ns, batch):
         unet_input = torch.cat((x_t, upsampled), dim=1)
         unet_input = unet_input.float().to(device)
 
-        betas_t = ns.get_index_from_list(ns.betas, t, x_t.shape)
+        betas_t = ns.get_index_from_list(ns.betas, t, x_t.shape).to(device)
 
-        sqrt_one_minus_alphas_cumprod_t = ns.get_index_from_list(ns.sqrt_one_minus_alphas_cumprod, t, x_t.shape)
+        sqrt_one_minus_alphas_cumprod_t = ns.get_index_from_list(ns.sqrt_one_minus_alphas_cumprod, t, x_t.shape).to(device)
 
-        sqrt_recip_alphas_t = ns.get_index_from_list(ns.sqrt_recip_alphas, t, x_t.shape)
+        sqrt_recip_alphas_t = ns.get_index_from_list(ns.sqrt_recip_alphas, t, x_t.shape).to(device)
         
         with torch.no_grad():
 
-            pred_noise = model(unet_input, t).to('cpu')
+            pred_noise = model(unet_input, t).to(device)
             x_t_minus_1 = sqrt_recip_alphas_t * (x_t - betas_t * pred_noise / sqrt_one_minus_alphas_cumprod_t)
 
-            posterior_variance_t = ns.get_index_from_list(ns.posterior_variance, t, x_t.shape)
+            posterior_variance_t = ns.get_index_from_list(ns.posterior_variance, t, x_t.shape).to(device)
 
             if i == 0:
                 x_t = x_t_minus_1
             else:
-                noise = torch.randn_like(x_t)
+                noise = torch.randn_like(x_t).to(device)
                 x_t = x_t_minus_1 + torch.sqrt(posterior_variance_t) * noise
                 
             if i % (ns.T/n_steps) == 0:
-                print(f'Step {i+1}')
+                all_x_t.append(x_t)
+    
+    return all_x_t
+
+def DDIM_infer(model, ns, batch):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    batch_size = batch["low_res"].shape[0]
+    low_res_imgs = batch["low_res"].unsqueeze(1)
+    upsampled = F.interpolate(low_res_imgs, size=up_shape, mode='bilinear').to(device)
+
+    model.to(device)
+
+    n_steps = 5
+
+    all_x_t = []
+
+    x_t = torch.randn((batch_size, 1, batch["high_res"][0].shape[0], batch["high_res"][0].shape[1])).to(device)
+    all_x_t.append(x_t)
+    for i in range(ns.T-1, -1, -1):
+        t = torch.tensor([i for _ in range(batch_size)]).to(device).long()
+        
+        unet_input = torch.cat((x_t, upsampled), dim=1)
+        unet_input = unet_input.float().to(device)
+
+        recip_sqrt_alphas_cumprod_t = ns.get_index_from_list((1.0 / ns.sqrt_alphas_cumprod), t, x_t.shape).to(device)
+
+        sqrt_one_minus_alphas_cumprod_t = ns.get_index_from_list(ns.sqrt_one_minus_alphas_cumprod, t, x_t.shape).to(device)
+        
+
+        with torch.no_grad():
+            pred_noise = model(unet_input, t)
+
+            predicted_x0 = recip_sqrt_alphas_cumprod_t * (x_t - sqrt_one_minus_alphas_cumprod_t * pred_noise)
+            predicted_x0 = predicted_x0.to(device)
+            
+            if i == 0:
+                x_t = predicted_x0
+            else:
+                t_minus_1 = t - 1
+                t_minus_1 = t_minus_1.to(device)
+        
+                sqrt_alphas_cumprod_t_minus_1 = ns.get_index_from_list(ns.sqrt_alphas_cumprod, t_minus_1, x_t.shape).to(device)
+        
+                sqrt_one_minus_alphas_cumprod_t_minus_1 = ns.get_index_from_list(ns.sqrt_one_minus_alphas_cumprod, t_minus_1, x_t.shape).to(device)
+                x_t = sqrt_alphas_cumprod_t_minus_1 * predicted_x0 + sqrt_one_minus_alphas_cumprod_t_minus_1 * pred_noise
+                
+            if i % (ns.T/n_steps) == 0:
                 all_x_t.append(x_t)
     
     return all_x_t
@@ -328,12 +398,12 @@ if __name__ == "__main__":
     train = True
     test = False
 
-    num_epochs = 100
+    num_epochs = 2000
 
     print("loading of the data")
     train_dataset, test_dataset, val_dataset = load_data(['u10', 'v10'], 2010, 2019, split_ratio = [0.1, 0.1])
 
-    batch_size = 64
+    batch_size = 256
 
     train_data_loader = DataLoader(train_dataset, batch_size= batch_size, shuffle=True)
     test_data_loader = DataLoader(test_dataset, batch_size= batch_size, shuffle=True)
@@ -342,11 +412,13 @@ if __name__ == "__main__":
     print("Data loaded")
     # Define the model
     print("Model creation")
-    unet_channels = [8, 16, 32, 32, 32]
-    kernel_sizes = [3, 5, 7, 5, 3]
+    unet_channels = [64, 128, 256, 384]
+    kernel_sizes = [3, 3, 3, 3]
     input_channels = 2
     output_channels = 1
     time_emb_dim = 32 # I guess that's a standard value
+    dropout = 0.1
+    lr = 1e-04
     up_shape = train_dataset[0]["high_res"].shape
     model = DenoisingUnet(
         unet_channels, 
@@ -355,19 +427,31 @@ if __name__ == "__main__":
         kernel_sizes,
         time_emb_dim, 
         up_shape, 
-        dropout=0.1, 
+        dropout=dropout, 
         attention=True,
         )
-    ns = NoiseScheduler(20, 0.015, 0.95)
+    min_noise = 0.0001
+    max_noise = 0.02
+    T = 300
+    ns = NoiseScheduler(T, min_noise, max_noise)
     print("model created")
     print("Num params: ", sum(p.numel() for p in model.parameters()))
 
     architecture_details = {
-        "Model": model,
-        "Noise Scheduler": ns,
+        # I removed these two because they are not JSON serializable
+        # "Model": model, 
+        # "Noise Scheduler": ns,
+        "Min noise": min_noise,
+        "Max noise": max_noise,
+        "T": T,
         "Epochs": num_epochs,
         "Batch size": batch_size,
-        "lr": 2.5e-04,
+        "lr": lr,
+        "dropout": dropout,
+        "unet_channels": unet_channels,
+        "kernel_sizes": kernel_sizes,
+        "input_channels": input_channels,
+        "time_emb_dim": time_emb_dim
         }
 
     if train:
@@ -380,7 +464,7 @@ if __name__ == "__main__":
             architecture_details, 
             num_epochs=num_epochs,
             batch_size=batch_size,
-            lr=2.5e-04, 
+            lr=lr, 
             save=True,
             load_best_model=True
             )
