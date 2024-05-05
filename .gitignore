@@ -6,7 +6,12 @@ homework/PetImages/
 
 .ipynb_checkpoints/
 
+<<<<<<< HEAD
 cerra/*.nc
 
 wandb/
 __pycache__/
+=======
+cerra/*.nc.DS_Store
+>>>>>>> 7575dca (Add .DS_Store to .gitignore)
+.DS_Store

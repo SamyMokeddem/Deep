@@ -1,4 +1,6 @@
 import os
+import datetime
+import json
 import torch
 import numpy as np
 import netCDF4 as nc
@@ -93,17 +95,28 @@ class NoiseScheduler():
         return sqrt_alphas_cumprod_t.to(device) * x_0.to(device) \
         + sqrt_one_minus_alphas_cumprod_t.to(device) * noise.to(device), noise.to(device)
 
-def save_model(model, run_name):
-    path = "train_models/" + run_name + ".pth"
-    try:
-        torch.save(model.state_dict(), path)
-    except:
-        print("Error while saving the model")
+def save_model(model, run_name, architecture_details):
+
+    directory = "train_models/"
+    filename = f"{run_name}.pth"
+    path = directory + filename
+    json_path = directory + f"{run_name}_architecture_data.json"
+    
+    os.makedirs(directory, exist_ok=True)
+
+    torch.save(model.state_dict(), path)
+    with open(json_path, 'w') as f:
+        json.dump(architecture_details, f)
+    print(f"Model and metadata saved successfully at {path} and {json_path}")
+
 
 def load_model(model, path):
-    return model.load_state_dict(torch.load(path))
+    model.load_state_dict(torch.load(path))
+    print(f"Model loaded successfully from {path}")
+    return model
 
-def train_proc(model, ns, train_data_loader, val_data_loader, num_epochs=100, batch_size=32, lr=5e-04, run_name=None, save=True, load_best_model=True):
+
+def train_proc(model, ns, train_data_loader, val_data_loader, architecture_details, num_epochs=100, batch_size=32, lr=5e-04, run_name=None, save=True, load_best_model=True):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device) # 200 in paper.
     optimizer = optim.Adam(model.parameters(), lr=lr)
@@ -177,6 +190,7 @@ def train_proc(model, ns, train_data_loader, val_data_loader, num_epochs=100, ba
 
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
+
         average_loss = total_loss/total_batches
         wandb.log({"loss": average_loss, "epoch":epoch, 'lr': optimizer.param_groups[0]['lr']})
 
@@ -229,14 +243,22 @@ def train_proc(model, ns, train_data_loader, val_data_loader, num_epochs=100, ba
             print(f"Training Loss over the last epoch = {average_loss}")
             print(f"Test Loss over the last epoch = {average_test_loss}")
             print(f"Learning rate = {optimizer.param_groups[0]['lr']}") # Trying to see if ReduceLROnPlateau works
+            batch = next(iter(train_data_loader))
+            all_xt = DDPM_infer(model, ns, batch)
+            fig, axs = plt.subplots(len(all_xt), batch_size, figsize=(6, 12))
+            fig.suptitle(f"Evolution of prediction over time steps (train set) : Epochs {epoch}")
+            for i in range(len(all_xt)):
+                for j in range(batch_size):
+                    axs[i, j].imshow(all_xt[i][j].squeeze().numpy())
+
 
         if load_best_model:
             if average_test_loss < best_loss:
                 best_loss = average_test_loss
-                save_model(model, run_name+"_best")
+                save_model(model, run_name+"_best", architecture_details=architecture_details)
 
     if save:
-        save_model(model, run_name+"_final")
+        save_model(model, run_name+"_final", architecture_details=architecture_details)
     
     if load_best_model:
         model= load_model(model, "train_models/" + run_name + "_best.pth")
@@ -310,6 +332,7 @@ if __name__ == "__main__":
     train = True
     test = False
 
+    num_epochs = 100
 
     print("loading of the data")
     train_dataset, test_dataset, val_dataset = load_data(['u10', 'v10'], 2010, 2019, split_ratio = [0.1, 0.1])
@@ -343,19 +366,29 @@ if __name__ == "__main__":
     print("model created")
     print("Num params: ", sum(p.numel() for p in model.parameters()))
 
+    architecture_details = {
+        "Model": model,
+        "Noise Scheduler": ns,
+        "Epochs": num_epochs,
+        "Batch size": batch_size,
+        "lr": 2.5e-04,
+        }
+
     if train:
         print("start of the training process")
         train_proc(
             model, 
             ns, 
             train_data_loader, 
-            val_data_loader, 
-            num_epochs=100,
+            val_data_loader,
+            architecture_details, 
+            num_epochs=num_epochs,
             batch_size=batch_size,
             lr=2.5e-04, 
             save=True,
             load_best_model=True
             )
+
         test_proc(model, ns, test_data_loader)
         print("end of the training process")
 
