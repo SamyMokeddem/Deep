@@ -116,7 +116,7 @@ def load_model(model, path):
     return model
 
 
-def train_proc(model, ns, train_data_loader, val_data_loader, architecture_details, num_epochs=100, batch_size=32, lr=5e-04, run_name=None, save=True, load_best_model=True):
+def train_proc(model, ns, train_data_loader, val_data_loader, architecture_details, up_shape, num_epochs=100, batch_size=32, lr=5e-04, run_name=None, save=True, load_best_model=True):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device) # 200 in paper.
     optimizer = optim.Adam(model.parameters(), lr=lr)
@@ -472,7 +472,8 @@ if __name__ == "__main__":
             ns, 
             train_data_loader, 
             val_data_loader,
-            architecture_details, 
+            architecture_details,
+            up_shape=up_shape,
             num_epochs=num_epochs,
             batch_size=batch_size,
             lr=lr,
