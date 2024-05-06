@@ -11,7 +11,7 @@ from datetime import datetime
 import torch.optim as optim
 import dataset as windData
 from tqdm import tqdm
-from models import DenoisingUnet
+from models import DenoisingUnet, SimpleUnet
 import matplotlib.pyplot as plt
 import math
 # Ignore warnings
@@ -403,7 +403,7 @@ if __name__ == "__main__":
     print("loading of the data")
     train_dataset, test_dataset, val_dataset = load_data(['u10', 'v10'], 2010, 2019, split_ratio = [0.1, 0.1])
 
-    batch_size = 256
+    batch_size = 128
 
     train_data_loader = DataLoader(train_dataset, batch_size= batch_size, shuffle=True)
     test_data_loader = DataLoader(test_dataset, batch_size= batch_size, shuffle=True)
@@ -412,7 +412,7 @@ if __name__ == "__main__":
     print("Data loaded")
     # Define the model
     print("Model creation")
-    unet_channels = [64, 128, 256, 384]
+    unet_channels = (64, 128, 256, 512, 1024) # <-- From youtube video. In the paper: [64, 128, 256, 384]
     kernel_sizes = [3, 3, 3, 3]
     input_channels = 2
     output_channels = 1
@@ -420,16 +420,27 @@ if __name__ == "__main__":
     dropout = 0.1
     lr = 1e-04
     up_shape = train_dataset[0]["high_res"].shape
-    model = DenoisingUnet(
-        unet_channels, 
-        input_channels, 
-        output_channels, 
-        kernel_sizes,
-        time_emb_dim, 
-        up_shape, 
-        dropout=dropout, 
-        attention=True,
+
+    model_type = "simple" # "denoising" or "simple"
+    if model_type == "denoising":
+        model = DenoisingUnet(
+            unet_channels, 
+            input_channels, 
+            output_channels, 
+            kernel_sizes,
+            time_emb_dim, 
+            up_shape, 
+            dropout=dropout, 
+            attention=True,
+            )
+    else:
+        model = SimpleUnet(
+            unet_channels,
+            input_channels,
+            output_channels,
+            time_emb_dim
         )
+
     min_noise = 0.0001
     max_noise = 0.02
     T = 300
@@ -464,7 +475,8 @@ if __name__ == "__main__":
             architecture_details, 
             num_epochs=num_epochs,
             batch_size=batch_size,
-            lr=lr, 
+            lr=lr,
+            run_name="SimpleUnet", # <-- Change that to the name of the model
             save=True,
             load_best_model=True
             )
