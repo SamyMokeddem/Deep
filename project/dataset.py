@@ -11,7 +11,7 @@ warnings.filterwarnings("ignore")
 class DownscalingDataset(Dataset):
     """Face Landmarks dataset."""
 
-    def __init__(self, low_res_data, high_res_data, low_var_name=None, high_var_name=None, indices = None):
+    def __init__(self, low_res_data, high_res_data, low_var_name=None, high_var_name=None, indices=None):
         """
         Args:
             root_dir (string): Directory with all the images.
@@ -28,6 +28,7 @@ class DownscalingDataset(Dataset):
 
         self.low_var_name = low_var_name
         self.high_var_name = high_var_name
+        # self.transform = transform
 
         if len(self.low_res_data) != len(self.high_res_data):
             raise ValueError("Low res and high res data must have the same length")
@@ -48,6 +49,10 @@ class DownscalingDataset(Dataset):
 
         low_res = np.array(self.low_res_data[idx])
         high_res = self.high_res_data[idx]
+        
+        # if self.transform:
+            # high_res = self.transform(high_res)
+            
 
         sample = {'low_res': low_res, 'high_res': high_res}
 

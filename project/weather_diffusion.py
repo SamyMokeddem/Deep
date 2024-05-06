@@ -22,6 +22,12 @@ warnings.filterwarnings("ignore")
 import wandb
 os.environ["WANDB_ENTITY"]="WindDownscaling"
 
+def resize_high_res(high_res):
+    # Convert NumPy array to PyTorch tensor
+    high_res_tensor = torch.tensor(high_res).unsqueeze(0)  # Add batch dimension
+    # Resize high-resolution data to 64x64
+    resized_high_res = F.interpolate(high_res_tensor, size=(64, 64), mode='bilinear', align_corners=False)
+    return resized_high_res.squeeze(0)  # Remove batch dimension # .numpy() to turn it back into numpy array
 
 def load_data(var_name=['u10', 'v10'], start=2010, end=2020, split_ratio = [0.2, 0.2]):
 
@@ -116,7 +122,7 @@ def load_model(model, path):
     return model
 
 
-def train_proc(model, ns, train_data_loader, val_data_loader, architecture_details, up_shape, num_epochs=100, batch_size=32, lr=5e-04, run_name=None, save=True, load_best_model=True):
+def train_proc(model, ns, train_data_loader, val_data_loader, architecture_details, up_shape=(64, 64), num_epochs=100, batch_size=32, lr=5e-04, run_name=None, save=True, load_best_model=True):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device) # 200 in paper.
     optimizer = optim.Adam(model.parameters(), lr=lr)
@@ -157,7 +163,11 @@ def train_proc(model, ns, train_data_loader, val_data_loader, architecture_detai
             optimizer.zero_grad()
 
             high_res_imgs = batch["high_res"]
-            high_res_imgs = high_res_imgs.unsqueeze(1) # because one channel
+            high_res_imgs = high_res_imgs.unsqueeze(1).float() # because one channel
+            
+            # !!! Now also upsample high res so that dimensions (64, 64) ==> downblocks dimensions match upblocks dimensions
+            upsamp_hr = F.interpolate(high_res_imgs, size=up_shape, mode='bilinear')
+            high_res_imgs = upsamp_hr
 
             if high_res_imgs.shape[0] != batch_size:
                 t = torch.randint(0, ns.T, (high_res_imgs.shape[0],), device=device).long()
@@ -206,7 +216,11 @@ def train_proc(model, ns, train_data_loader, val_data_loader, architecture_detai
             for i, batch in enumerate(val_data_loader):
 
                 high_res_imgs = batch["high_res"]
-                high_res_imgs = high_res_imgs.unsqueeze(1) # because one channel
+                high_res_imgs = high_res_imgs.unsqueeze(1).float() # because one channel
+                
+                # !!! Now also upsample high res so that dimensions (64, 64) ==> downblocks dimensions match upblocks dimensions
+                upsamp_hr = F.interpolate(high_res_imgs, size=up_shape, mode='bilinear')
+                high_res_imgs = upsamp_hr
 
                 if high_res_imgs.shape[0] != batch_size:
                     t = torch.randint(0, ns.T, (high_res_imgs.shape[0],), device=device).long()
@@ -246,11 +260,11 @@ def train_proc(model, ns, train_data_loader, val_data_loader, architecture_detai
             print(f"Learning rate = {optimizer.param_groups[0]['lr']}") # Trying to see if ReduceLROnPlateau works
             #inference
             # ddim
-            test_proc(model, ns, train_data_loader, train=True, ddpm=False, num_epoch=epoch)
-            test_proc(model, ns, val_data_loader, train=False, ddpm=False, num_epoch=epoch)
+            test_proc(model, ns, train_data_loader, train=True, ddpm=False, num_epoch=epoch, up_shape=up_shape)
+            test_proc(model, ns, val_data_loader, train=False, ddpm=False, num_epoch=epoch, up_shape=up_shape)
             # ddpm
-            test_proc(model, ns, train_data_loader, train=True, ddpm=True, num_epoch=epoch)
-            test_proc(model, ns, val_data_loader, train=False, ddpm=True, num_epoch=epoch)
+            test_proc(model, ns, train_data_loader, train=True, ddpm=True, num_epoch=epoch, up_shape=up_shape)
+            test_proc(model, ns, val_data_loader, train=False, ddpm=True, num_epoch=epoch, up_shape=up_shape)
 
 
         if load_best_model:
@@ -266,16 +280,16 @@ def train_proc(model, ns, train_data_loader, val_data_loader, architecture_detai
 
     wandb.finish()
     
-def test_proc(model, ns, data_loader, train=False, ddpm=False, num_epoch = 200):
+def test_proc(model, ns, data_loader, train=False, ddpm=False, num_epoch=200, up_shape=(64,64)):
     batch = next(iter(data_loader))
     batch_size = 3 # Simpler plot + faster computations, can change that back later
     batch["low_res"] = batch["low_res"][:batch_size]
     batch['high_res'] = batch['high_res'][:batch_size]
 
     if ddpm:
-        all_x_t = DDPM_infer(model, ns, batch)
+        all_x_t = DDPM_infer(model, ns, batch, up_shape)
     else:
-        all_x_t = DDIM_infer(model, ns, batch)
+        all_x_t = DDIM_infer(model, ns, batch, up_shape)
 
     fig, axs = plt.subplots(len(all_x_t), batch_size, figsize=(6, 12))
 
@@ -288,20 +302,20 @@ def test_proc(model, ns, data_loader, train=False, ddpm=False, num_epoch = 200):
     if ddpm:
         if train:
             wandb.log({"ddpm_train": fig})
-            plt.savefig(f'inference/ddpm_prediction_train_{num_epoch}.png')
+            # plt.savefig(f'inference/ddpm_prediction_train_{num_epoch}.png')
         else:
             wandb.log({"ddpm_val": fig})
-            plt.savefig(f'inference/ddpm_prediction_val_{num_epoch}.png')
+            # plt.savefig(f'inference/ddpm_prediction_val_{num_epoch}.png')
     else:
         if train:
             wandb.log({"ddim_train": fig})
-            plt.savefig(f'inference/ddim_prediction_train_{num_epoch}.png')
+            # plt.savefig(f'inference/ddim_prediction_train_{num_epoch}.png')
         else:
             wandb.log({"ddim_val": fig})
-            plt.savefig(f'inference/ddim_prediction_val_{num_epoch}.png')
+            # plt.savefig(f'inference/ddim_prediction_val_{num_epoch}.png')
     plt.close()
 
-def DDPM_infer(model, ns, batch):
+def DDPM_infer(model, ns, batch, up_shape):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
     batch_size = batch["low_res"].shape[0]
@@ -314,7 +328,7 @@ def DDPM_infer(model, ns, batch):
 
     all_x_t = []
 
-    x_t = torch.randn((batch_size, 1, batch["high_res"][0].shape[0], batch["high_res"][0].shape[1])).to(device)
+    x_t = torch.randn((batch_size, 1, up_shape[0], up_shape[1])).to(device)
     all_x_t.append(x_t)
     for i in range(ns.T-1, -1, -1):
         t = torch.tensor([i for _ in range(batch_size)]).to(device).long()
@@ -346,7 +360,7 @@ def DDPM_infer(model, ns, batch):
     
     return all_x_t
 
-def DDIM_infer(model, ns, batch):
+def DDIM_infer(model, ns, batch, up_shape):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
     batch_size = batch["low_res"].shape[0]
@@ -359,7 +373,7 @@ def DDIM_infer(model, ns, batch):
 
     all_x_t = []
 
-    x_t = torch.randn((batch_size, 1, batch["high_res"][0].shape[0], batch["high_res"][0].shape[1])).to(device)
+    x_t = torch.randn((batch_size, 1, up_shape[0], up_shape[1])).to(device)
     all_x_t.append(x_t)
     for i in range(ns.T-1, -1, -1):
         t = torch.tensor([i for _ in range(batch_size)]).to(device).long()
@@ -419,7 +433,7 @@ if __name__ == "__main__":
     time_emb_dim = 32 # I guess that's a standard value
     dropout = 0.1
     lr = 1e-04
-    up_shape = train_dataset[0]["high_res"].shape
+    up_shape = (64, 64)
 
     model_type = "simple" # "denoising" or "simple"
     if model_type == "denoising":
@@ -477,7 +491,7 @@ if __name__ == "__main__":
             num_epochs=num_epochs,
             batch_size=batch_size,
             lr=lr,
-            run_name="SimpleUnet", # <-- Change that to the name of the model
+            # run_name="SimpleUnet", # <-- Change that to the name of the model
             save=True,
             load_best_model=True
             )
