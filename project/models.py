@@ -324,7 +324,7 @@ def callback_lr_wd(optimizer, epoch, num_epochs):
 # UNet model from the youtube tutorial
 #############################################
 class Block(nn.Module):
-    def __init__(self, in_ch, out_ch, time_emb_dim, up=False):
+    def __init__(self, in_ch, out_ch, time_emb_dim, dropout=0.2, up=False):
         super().__init__()
         self.time_mlp =  nn.Linear(time_emb_dim, out_ch)
         if up:
@@ -337,8 +337,9 @@ class Block(nn.Module):
         self.bnorm1 = nn.BatchNorm2d(out_ch)
         self.bnorm2 = nn.BatchNorm2d(out_ch)
         self.relu  = nn.ReLU()
+        self.spatial_attention = SpatialAttention()
 
-        self.drop = nn.Dropout(p=0.2)
+        # self.drop = nn.Dropout(p=dropout)
 
     def forward(self, x, t, ):
         # First Conv
@@ -351,23 +352,25 @@ class Block(nn.Module):
         h = h + time_emb
         # Second Conv
         h = self.bnorm2(self.relu(self.conv2(h)))
+        h = self.spatial_attention(h)
         # Down or Upsample
         h = self.transform(h)
 
-        h = self.drop(h)
+        # h = self.drop(h)
         return h
 
 class SimpleUnet(nn.Module):
     """
     A simplified variant of the Unet architecture.
     """
-    def __init__(self, unet_channels=(64, 128, 256, 512, 1024), input_channels=3, output_channels=3, time_emb_dim=32):
+    def __init__(self, unet_channels=(64, 128, 256, 512, 1024), input_channels=3, output_channels=3, time_emb_dim=32, dropout=0.2):
         super().__init__()
         self.input_channels = input_channels
         self.output_channels = output_channels
         self.down_channels = unet_channels
         self.up_channels = unet_channels[::-1]
         self.time_emb_dim = time_emb_dim
+        self.dropout = dropout
 
         # Time embedding
         self.time_mlp = nn.Sequential(
@@ -381,11 +384,11 @@ class SimpleUnet(nn.Module):
 
         # Downsample
         self.downs = nn.ModuleList([Block(self.down_channels[i], self.down_channels[i+1], \
-                                    self.time_emb_dim) \
+                                    self.time_emb_dim, dropout=self.dropout) \
                     for i in range(len(self.down_channels)-1)])
         # Upsample
         self.ups = nn.ModuleList([Block(self.up_channels[i], self.up_channels[i+1], \
-                                        self.time_emb_dim, up=True) \
+                                        self.time_emb_dim, dropout=self.dropout, up=True) \
                     for i in range(len(self.up_channels)-1)])
 
         # Edit: Corrected a bug found by Jakub C (see YouTube comment)
@@ -407,3 +410,5 @@ class SimpleUnet(nn.Module):
             x = torch.cat((x, residual_x), dim=1)
             x = up(x, t)
         return self.output(x)
+    
+
