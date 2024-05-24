@@ -37,32 +37,31 @@ def resize_high_res(high_res):
     resized_high_res = F.interpolate(high_res_tensor, size=(64, 64), mode='bilinear', align_corners=False)
     return resized_high_res.squeeze(0)  # Remove batch dimension # .numpy() to turn it back into numpy array
 
-def load_data(var_name=['u10', 'v10'], start=2010, end=2020, split_ratio = [0.05, 0.05]):
+def load_data(var_name=['u10', 'v10'], start=2010, end=2020, pred_step=0, normalize=False, 
+              in_max=None, in_min=None, out_max=None, out_min=None):
 
-    in_data, out_data = windData.make_clean_data(var_name, start, end)
+    in_data, out_data, dates = windData.make_clean_data(var_name, start, end)
     u10 = in_data[:,:,:,0]
     v10 = in_data[:,:,:,1]
     in_data = np.sqrt(np.square(u10) + np.square(v10))
-
     #normalize the data
-    in_max, in_min = (np.max(in_data), np.min(in_data))
-    in_data = (in_data-in_max)/(in_max-in_min)
+    in_norm_raw = (np.max(in_data), np.min(in_data))
+    out_norm_raw = (np.max(out_data), np.min(out_data))
+    if normalize:
+        if in_max is None or in_min is None:
+            in_max, in_min = (np.max(in_data), np.min(in_data))
+        in_data = (in_data-in_min)/(in_max-in_min)
 
-    out_max, out_min = (np.max(out_data), np.min(out_data))
-    out_data = (out_data-out_max)/(out_max-out_min)
+        if out_max is None or out_min is None:
+            out_max, out_min = (np.max(out_data), np.min(out_data))
+        out_data = (out_data-out_min)/(out_max-out_min)
 
-    train_idx, val_idx, test_idx = windData.spliting_indices(len(in_data), val_pct=split_ratio[0], test_pct=split_ratio[1])
-
-    # Diviser le dataset en trois pour que ce soit propre.
-
-    train_dataset = windData.DownscalingDataset(in_data, out_data, low_var_name='uv10', high_var_name='si10', indices=train_idx)
-    test_dataset = windData.DownscalingDataset(in_data, out_data, low_var_name='uv10', high_var_name='si10', indices=val_idx)
-    val_dataset = windData.DownscalingDataset(in_data, out_data, low_var_name='uv10', high_var_name='si10', indices= test_idx)
+    train_dataset = windData.DownscalingDataset(in_data, out_data, dates, low_var_name='uv10', high_var_name='si10', pred_step=pred_step)
 
     train_dataset.get_var_name()
-    print("dataset loaded with a train size of ", len(train_dataset), " and a test size of ", len(test_dataset))
+    print("dataset loaded with a train size of ", len(train_dataset))
     print("The input data has a shape of ", in_data.shape, " and the output data has a shape of ", out_data.shape)
-    return train_dataset, test_dataset, val_dataset
+    return train_dataset, in_norm_raw, out_norm_raw
 
 
 class NoiseScheduler():

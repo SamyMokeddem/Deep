@@ -7,7 +7,7 @@ import torch.optim as optim
 from tqdm import tqdm
 import math
 from utils import save_model, load_model
-from evaluate import test_proc
+from evaluate import eval_proc
 from time import time
 # Ignore warnings
 import warnings
@@ -40,7 +40,7 @@ def pred_noise(batch, model, ns, device, up_shape=(64, 64)):
     
     # For now, let's only condition on low res at the same time, to simplify implementation
     low_res_imgs = batch["low_res"]
-    low_res_imgs = low_res_imgs.unsqueeze(1).float() # because one channel
+    low_res_imgs = low_res_imgs.float() # no need to unsqueeze anymore
 
     # upsample low res to match high res shape
     upsampled = F.interpolate(low_res_imgs, size=up_shape, mode='bilinear')
@@ -50,11 +50,10 @@ def pred_noise(batch, model, ns, device, up_shape=(64, 64)):
     noise_pred = model(unet_input.to(device), t) # model is denoising unet
 
     noise = noise.to(device)
-
     return noise, noise_pred
 
 def train_proc(model, ns, train_data_loader, val_data_loader, architecture_details, up_shape=(64, 64),
-                num_epochs=100, lr=5e-04, run_name=None, save=True, load_best_model=True):
+                num_epochs=100, lr=5e-04, ensemble=1, run_name=None, save=True, load_best_model=True):
     
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -66,7 +65,7 @@ def train_proc(model, ns, train_data_loader, val_data_loader, architecture_detai
 
     wandb.init(
         # set the wandb project where this run will be logged
-        project="Wind_Downscaling",
+        project="Report",
 
         # track hyperparameters and run metadata
         config=architecture_details,
@@ -134,34 +133,40 @@ def train_proc(model, ns, train_data_loader, val_data_loader, architecture_detai
                 'val/time': end_time-start_time,
                 })
 
-        if epoch % 2 == 0:
-            start_time = time()
-            print(f"Epoch = {epoch+1}/{num_epochs}.")
-            print(f"Training Loss over the last epoch = {average_loss}")
-            print(f"Validation Loss over the last epoch = {average_val_loss}")
-            print(f"Learning rate = {optimizer.param_groups[0]['lr']}") # Trying to see if ReduceLROnPlateau works
-            #inference
-            # ddim
-            train_DDIM_error, train_DDIM_fig = test_proc(model, ns, train_data_loader, num_epoch=epoch, up_shape=up_shape)
-            test_DDIM_error, test_DDIM_fig = test_proc(model, ns, val_data_loader, num_epoch=epoch, up_shape=up_shape)
-            # ddpm
-            train_DDPM_error, train_DDPM_fig = test_proc(model, ns, train_data_loader, num_epoch=epoch, up_shape=up_shape)
-            test_DDPM_error, test_DDPM_fig = test_proc(model, ns, val_data_loader, num_epoch=epoch, up_shape=up_shape)
-            end_time = time()
-            wandb.log({
-                "train/DDIM_error": train_DDIM_error,
-                "train/DDIM_inference": train_DDIM_fig,
-                "val/DDIM_error": test_DDIM_error,
-                "val/DDIM_inference": test_DDIM_fig,
-                "train/DDPM_error": train_DDPM_error,
-                "train/DDPM_inference": train_DDPM_fig,
-                "val/DDPM_error": test_DDPM_error,
-                "val/DDPM_inference": test_DDPM_fig,
-                "epoch":epoch,
-                'inference/time': end_time-start_time,
-                })
-
+        
+        start_time = time()
+        print(f"Epoch = {epoch+1}/{num_epochs}.")
+        print(f"Training Loss over the last epoch = {average_loss}")
+        print(f"Validation Loss over the last epoch = {average_val_loss}")
+        print(f"Learning rate = {optimizer.param_groups[0]['lr']}") # Trying to see if ReduceLROnPlateau works
+        #inference
+        # ddim
+        print("Starting evaluation...")
+        train_DDIM_mse, train_DDIM_ssim, train_DDIM_fig = eval_proc(model, ns, train_data_loader, inf_type='DDIM', num_epoch=epoch, up_shape=up_shape, ensemble=ensemble)
+        test_DDIM_mse, test_DDIM_ssim, test_DDIM_fig = eval_proc(model, ns, val_data_loader, inf_type='DDIM', num_epoch=epoch, up_shape=up_shape, ensemble=ensemble)
+        # ddpm
+        train_DDPM_mse, train_DDPM_ssim, train_DDPM_fig = eval_proc(model, ns, train_data_loader, num_epoch=epoch, up_shape=up_shape, ensemble=ensemble)
+        test_DDPM_mse, test_DDPM_ssim, test_DDPM_fig = eval_proc(model, ns, val_data_loader, num_epoch=epoch, up_shape=up_shape, ensemble=ensemble)
+        end_time = time()
+        wandb.log({
+            "train/DDIM_error": train_DDIM_mse,
+            "val/DDIM_error": test_DDIM_mse,
+            "train/DDPM_error": train_DDPM_mse,
+            "val/DDPM_error": test_DDPM_mse,
+            "train/DDIM_ssim": train_DDIM_ssim,
+            "val/DDIM_ssim": test_DDIM_ssim,
+            "train/DDPM_ssim": train_DDPM_ssim,
+            "val/DDPM_ssim": test_DDPM_ssim,
+            "train/DDIM_inference": train_DDIM_fig,
+            "val/DDIM_inference": test_DDIM_fig,
+            "train/DDPM_inference": train_DDPM_fig,
+            "val/DDPM_inference": test_DDPM_fig,
+            "epoch":epoch,
+            'inference/time': end_time-start_time,
+            })
+        print("End of evaluation...")
         if load_best_model:
+            print("Best loss so far: ", best_loss)
             if average_val_loss < best_loss:
                 best_loss = average_val_loss
                 save_model(model, run_name+"_best", architecture_details=architecture_details)

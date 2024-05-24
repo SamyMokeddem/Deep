@@ -11,31 +11,41 @@ warnings.filterwarnings("ignore")
 class DownscalingDataset(Dataset):
     """Face Landmarks dataset."""
 
-    def __init__(self, low_res_data, high_res_data, low_var_name=None, high_var_name=None, indices=None):
+    def __init__(self, low_res_data, high_res_data, dates, low_var_name=None, high_var_name=None, indices=None, pred_step=0):
         """
         Args:
             root_dir (string): Directory with all the images.
             low_res_path (string): Path to the low resolution data.
             high_res_path (string): Path to the high resolution data.
-            indices (array) : indices of the subset (train, val, test)
+            indices (array): indices of the subset (train, val, test)
+            pred_step (int): number of previous time steps to consider
         """
         if indices is not None:
             self.low_res_data = low_res_data[indices]
             self.high_res_data = high_res_data[indices]
+            self.dates = dates[indices]
         else:
             self.low_res_data = low_res_data
             self.high_res_data = high_res_data
 
         self.low_var_name = low_var_name
         self.high_var_name = high_var_name
+        self.max_low = np.max(self.low_res_data)
+        self.min_low = np.min(self.low_res_data)
+        self.max_high = np.max(self.high_res_data)
+        self.min_high = np.min(self.high_res_data)
         # self.transform = transform
+        
+        self.pred_step = pred_step
+        
+        self.dates = dates
 
         if len(self.low_res_data) != len(self.high_res_data):
             raise ValueError("Low res and high res data must have the same length")
 
 
     def __len__(self):
-        return len(self.low_res_data)
+        return len(self.low_res_data) - self.pred_step
 
     def get_var_name(self):
         if self.low_var_name is None or self.high_var_name is None:
@@ -47,14 +57,15 @@ class DownscalingDataset(Dataset):
         if torch.is_tensor(idx):
             idx = idx.tolist()
 
-        low_res = np.array(self.low_res_data[idx])
-        high_res = self.high_res_data[idx]
+        low_res = np.array([self.low_res_data[idx + self.pred_step - i] for i in range(self.pred_step + 1)])
+        high_res = self.high_res_data[idx + self.pred_step]
+        dates = self.dates[idx + self.pred_step]
         
         # if self.transform:
             # high_res = self.transform(high_res)
             
 
-        sample = {'low_res': low_res, 'high_res': high_res}
+        sample = {'low_res': low_res, 'high_res': high_res, 'dates': dates}
 
         return sample
 
@@ -97,13 +108,21 @@ def make_clean_data(in_vars, start_year, end_year):
             in_data = tmp_data
         else:
             in_data = np.concatenate((in_data, tmp_data), axis=3)
-    #filter data in fonction of start_year and end_year
-    low_hour = datetime(start_year, 1, 1, 1).timestamp()
-    high_hour = datetime(end_year, 1, 1, 1).timestamp()
-    low_index = np.where(out_date == low_hour)[0][0]
-    high_index = np.where(out_date == high_hour)[0][0]
+    #filter data in function of start_year and end_year
+    low_hour = datetime(start_year, 1, 1, 0, 1).timestamp()
+    high_hour = datetime(end_year, 12, 31, 23, 59).timestamp()
+    low_error = np.abs(out_date - low_hour)
+    low_index = np.argmin(low_error)
+    high_error = np.abs(out_date - high_hour)
+    high_index = np.argmin(high_error)
     print(low_index, high_index)
-    return in_data[low_index:high_index], out_data[low_index:high_index]
+    
+    # We also keep the dates of the observations
+    out_date = out_date[low_index:high_index]
+    # out_dt = [datetime.fromtimestamp(ts) for ts in out_date]
+    print(f"Starting date: {(datetime.fromtimestamp(out_date[0])).strftime('%Y-%m-%d %H:%M:%S')}; Ending date: {(datetime.fromtimestamp(out_date[-1])).strftime('%Y-%m-%d %H:%M:%S')}")
+
+    return in_data[low_index:high_index], out_data[low_index:high_index], out_date
 
 
 if __name__ == "__main__":
