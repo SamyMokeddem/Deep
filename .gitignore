@@ -9,7 +9,7 @@ homework/PetImages/
 
 cerra/*.nc
 
-train_models/
+
 
 wandb/
 __pycache__/

@@ -1,1 +1,0 @@
-python weather_diffusion.py --train --auto_name --batch_size=64 --pred_step=0 --T=50
